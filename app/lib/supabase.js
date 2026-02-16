@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY; // your sb_publishable_ key
+const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY; 
 
 if (!supabaseUrl || !supabaseKey) {
   throw new Error(
@@ -9,7 +9,7 @@ if (!supabaseUrl || !supabaseKey) {
   );
 }
 
-// Create Supabase client (v2+ supports sb_publishable keys)
+
 export const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Debug
