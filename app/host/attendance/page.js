@@ -1,123 +1,92 @@
-"use client";
+"use client"; // MUST be first line
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../lib/supabase";
-import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
-import autoTable from "jspdf-autotable";
+import "jspdf-autotable"; // patches jsPDF
+import * as XLSX from "xlsx";
 
 export default function AttendancePage() {
   const router = useRouter();
   const [hostInfo, setHostInfo] = useState(null);
   const [records, setRecords] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [selectedGroup, setSelectedGroup] = useState("");
-  const [groups, setGroups] = useState([]);
+  const [filter, setFilter] = useState({ course: "", yearSection: "" });
 
   useEffect(() => {
     const host = sessionStorage.getItem("hostInfo");
-    if (!host) router.push("/host");
-    else {
-      const hostObj = JSON.parse(host);
-      setHostInfo(hostObj);
-      fetchAttendance(hostObj.id);
+    if (!host) {
+      router.push("/host/login");
+      return;
     }
+    const hostObj = JSON.parse(host);
+    setHostInfo(hostObj);
+    fetchAttendance(hostObj.id);
   }, []);
 
   const fetchAttendance = async (hostId) => {
-    setLoading(true);
-    try {
-      const { data: attendance, error: attendanceError } = await supabase
-        .from("attendance")
-        .select("*")
-        .eq("host_id", hostId)
-        .order("scanned_at", { ascending: true });
+    const { data, error } = await supabase
+      .from("attendance")
+      .select(`id, scanned_at, student_id (lastname, firstname, course, yearsection)`)
+      .eq("host_id", hostId);
 
-      if (attendanceError) throw attendanceError;
-      if (!attendance || attendance.length === 0) {
-        setRecords([]);
-        setGroups([]);
-        setSelectedGroup("");
-        setLoading(false);
-        return;
-      }
-
-      const studentIds = attendance.map(a => a.student_id);
-      const { data: students, error: studentError } = await supabase
-        .from("students")
-        .select("*")
-        .in("id", studentIds);
-
-      if (studentError) throw studentError;
-
-      const mergedRecords = attendance.map(a => {
-        const student = students.find(s => s.id === a.student_id) || {};
-        return { ...a, student };
-      });
-
-      // Sort by course → yearsection → lastname
-      mergedRecords.sort((a, b) => {
-        if (a.student.course !== b.student.course)
-          return a.student.course.localeCompare(b.student.course);
-        if (a.student.yearsection !== b.student.yearsection)
-          return a.student.yearsection.localeCompare(b.student.yearsection);
-        return a.student.lastname.localeCompare(b.student.lastname);
-      });
-
-      setRecords(mergedRecords);
-
-      // Groups for filter dropdown
-      const uniqueGroups = [
-        ...new Set(mergedRecords.map(r => `${r.student.course} - ${r.student.yearsection}`))
-      ];
-      setGroups(uniqueGroups);
-      setSelectedGroup(uniqueGroups[0] || "");
-
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
+    if (error) {
+      console.error(error);
+      return;
     }
-  };
 
-  const filteredRecords = selectedGroup
-    ? records.filter(r => `${r.student.course} - ${r.student.yearsection}` === selectedGroup)
-    : records;
-
-  // ----------------
-  // Download helpers
-  // ----------------
-  const prepareData = (data) =>
-    data.map(r => ({
-      Course: r.student.course,
-      "Year/Section": r.student.yearsection,
-      "Last Name": r.student.lastname,
-      "First Name": r.student.firstname,
-      "Scanned At": new Date(r.scanned_at).toLocaleString()
-    }));
-
-  const downloadExcel = (all = false) => {
-    const data = all ? records : filteredRecords;
-    if (!data.length) return;
-
-    const ws = XLSX.utils.json_to_sheet(prepareData(data));
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Attendance");
-    XLSX.writeFile(wb, all ? "attendance_all.xlsx" : "attendance.xlsx");
-  };
-
-  const downloadPDF = (all = false) => {
-    const data = all ? records : filteredRecords;
-    if (!data.length) return;
-
-    const doc = new jsPDF();
-    autoTable(doc, {
-      head: [["Course", "Year/Section", "Last Name", "First Name", "Scanned At"]],
-      body: prepareData(data).map(r => [r.Course, r["Year/Section"], r["Last Name"], r["First Name"], r["Scanned At"]]),
-      startY: 10
+    // Sort by course, yearSection, lastname
+    const sorted = data.sort((a, b) => {
+      if (a.student_id.course !== b.student_id.course)
+        return a.student_id.course.localeCompare(b.student_id.course);
+      if (a.student_id.yearsection !== b.student_id.yearsection)
+        return a.student_id.yearsection.localeCompare(b.student_id.yearsection);
+      return a.student_id.lastname.localeCompare(b.student_id.lastname);
     });
-    doc.save(all ? "attendance_all.pdf" : "attendance.pdf");
+
+    setRecords(sorted);
+  };
+
+  // Apply filters
+  const filteredRecords = records.filter(r => {
+    return (
+      (!filter.course || r.student_id.course === filter.course) &&
+      (!filter.yearSection || r.student_id.yearsection === filter.yearSection)
+    );
+  });
+
+  // PDF download
+  const downloadPDF = () => {
+    const doc = new jsPDF();
+    doc.text("Attendance Records", 14, 20);
+    doc.autoTable({
+      head: [["Last Name", "First Name", "Course", "YearSection", "Scanned At"]],
+      body: filteredRecords.map(r => [
+        r.student_id.lastname,
+        r.student_id.firstname,
+        r.student_id.course,
+        r.student_id.yearsection,
+        new Date(r.scanned_at).toLocaleString()
+      ]),
+      startY: 30
+    });
+    doc.save("attendance.pdf");
+  };
+
+  // Excel download
+  const downloadExcel = () => {
+    const worksheet = XLSX.utils.json_to_sheet(
+      filteredRecords.map(r => ({
+        Lastname: r.student_id.lastname,
+        Firstname: r.student_id.firstname,
+        Course: r.student_id.course,
+        YearSection: r.student_id.yearsection,
+        ScannedAt: new Date(r.scanned_at).toLocaleString()
+      }))
+    );
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Attendance");
+    XLSX.writeFile(workbook, "attendance.xlsx");
   };
 
   return (
@@ -127,62 +96,47 @@ export default function AttendancePage() {
       </header>
 
       <main style={mainStyle}>
-        {/* Controls */}
-        <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginBottom: "15px" }}>
-          <button style={buttonStyle} onClick={() => fetchAttendance(hostInfo.id)} disabled={loading}>
-            {loading ? "Refreshing..." : "Refresh List"}
-          </button>
-
-          <select
-            style={buttonStyle}
-            value={selectedGroup}
-            onChange={(e) => setSelectedGroup(e.target.value)}
-          >
-            {groups.map(g => (
-              <option key={g} value={g}>{g}</option>
-            ))}
+        {/* Filters */}
+        <div style={{ display: "flex", gap: "10px", marginBottom: "15px" }}>
+          <select value={filter.course} onChange={e => setFilter({ ...filter, course: e.target.value })} style={inputStyle}>
+            <option value="">All Courses</option>
+            <option value="BSIT">BSIT</option>
+            <option value="BSCS">BSCS</option>
+            <option value="BSBA">BSBA</option>
           </select>
 
-          <button style={buttonStyle} onClick={() => downloadExcel(false)}>Download Excel</button>
-          <button style={buttonStyle} onClick={() => downloadPDF(false)}>Download PDF</button>
-
-          <button style={buttonStyle} onClick={() => downloadExcel(true)}>Download All Excel</button>
-          <button style={buttonStyle} onClick={() => downloadPDF(true)}>Download All PDF</button>
+          <select value={filter.yearSection} onChange={e => setFilter({ ...filter, yearSection: e.target.value })} style={inputStyle}>
+            <option value="">All YearSections</option>
+            <option value="1A">1A</option>
+            <option value="2A">2A</option>
+            <option value="3A">3A</option>
+            <option value="4A">4A</option>
+          </select>
         </div>
 
-        {/* Attendance Records */}
-        {filteredRecords.length === 0 ? (
-          <p>No attendance recorded for this group.</p>
-        ) : (
-          filteredRecords.map((r) => (
-            <div
-              key={r.id}
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                padding: "12px",
-                backgroundColor: "white",
-                borderRadius: "8px",
-                boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
-                marginTop: "8px",
-                width: "100%",
-                maxWidth: "700px"
-              }}
-            >
-              <div>
-                <p><strong>{r.student.lastname}, {r.student.firstname}</strong></p>
-                <p>{r.student.course} - {r.student.yearsection}</p>
-              </div>
-              <div>
-                <p>{new Date(r.scanned_at).toLocaleString()}</p>
-              </div>
-            </div>
-          ))
-        )}
+        {/* Download Buttons */}
+        <div style={{ display: "flex", gap: "15px", marginBottom: "20px" }}>
+          <button style={buttonStyle} onClick={downloadPDF}>Download PDF</button>
+          <button style={buttonStyle} onClick={downloadExcel}>Download Excel</button>
+          <button style={buttonStyle} onClick={() => router.push("/host/dashboard")}>Back</button>
+        </div>
 
-        <button style={{ ...buttonStyle, marginTop: "20px" }} onClick={() => router.push("/host/dashboard")}>
-          Back to Dashboard
-        </button>
+        {/* Attendance List */}
+        {filteredRecords.length === 0 ? (
+          <p>No attendance records.</p>
+        ) : (
+          <div style={{ width: "100%", maxWidth: "700px", display: "flex", flexDirection: "column", gap: "10px" }}>
+            {filteredRecords.map(r => (
+              <div key={r.id} style={recordStyle}>
+                <div>
+                  <strong>{r.student_id.lastname}, {r.student_id.firstname}</strong>
+                  <p>{r.student_id.course} - {r.student_id.yearsection}</p>
+                </div>
+                <div>{new Date(r.scanned_at).toLocaleString()}</div>
+              </div>
+            ))}
+          </div>
+        )}
       </main>
 
       <footer style={headerFooterStyle}>
@@ -195,27 +149,8 @@ export default function AttendancePage() {
 // ------------------------
 // Styles
 // ------------------------
-const headerFooterStyle = {
-  backgroundColor: "#FFD700",
-  padding: "20px",
-  textAlign: "center",
-};
-
-const mainStyle = {
-  flex: 1,
-  display: "flex",
-  flexDirection: "column",
-  alignItems: "center",
-  gap: "15px",
-  padding: "20px",
-};
-
-const buttonStyle = {
-  padding: "10px 20px",
-  fontSize: "14px",
-  borderRadius: "6px",
-  border: "none",
-  backgroundColor: "#f4b400",
-  color: "white",
-  cursor: "pointer",
-};
+const headerFooterStyle = { backgroundColor: "#FFD700", padding: "20px", textAlign: "center" };
+const mainStyle = { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", padding: "20px" };
+const inputStyle = { padding: "10px", borderRadius: "8px", border: "1px solid #ccc" };
+const buttonStyle = { padding: "12px 30px", fontSize: "16px", borderRadius: "8px", border: "none", backgroundColor: "#f4b400", color: "white", cursor: "pointer", minWidth: "120px" };
+const recordStyle = { display: "flex", justifyContent: "space-between", padding: "12px", backgroundColor: "white", borderRadius: "8px", boxShadow: "0 1px 3px rgba(0,0,0,0.1)" };

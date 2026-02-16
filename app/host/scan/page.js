@@ -1,4 +1,4 @@
-"use client";
+"use client"; // MUST be first line
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -7,32 +7,31 @@ import { supabase } from "../../lib/supabase";
 
 export default function ScanPage() {
   const router = useRouter();
-  const [hostInfo, setHostInfo] = useState(null);
-  const [message, setMessage] = useState("");
-  const [scanning, setScanning] = useState(true);
-  const [recentScans, setRecentScans] = useState(new Set()); // prevent duplicates
   const videoRef = useRef(null);
   const codeReaderRef = useRef(null);
+  const [hostInfo, setHostInfo] = useState(null);
+  const [message, setMessage] = useState("");
 
   useEffect(() => {
+    // Check if host is logged in
     const host = sessionStorage.getItem("hostInfo");
     if (!host) {
-      router.push("/host");
+      router.push("/host/login");
       return;
     }
-    const parsedHost = JSON.parse(host);
-    setHostInfo(parsedHost);
+    setHostInfo(JSON.parse(host));
 
+    // Initialize scanner
     codeReaderRef.current = new BrowserMultiFormatReader();
-    startScanner(parsedHost);
+    startScanner();
 
+    // Cleanup
     return () => {
       if (codeReaderRef.current) codeReaderRef.current.reset();
     };
   }, []);
 
-  // Scanner only starts after hostInfo is loaded
-  const startScanner = async (host) => {
+  const startScanner = async () => {
     if (!videoRef.current) return;
 
     try {
@@ -40,14 +39,10 @@ export default function ScanPage() {
         null, // default camera
         videoRef.current,
         async (result, err) => {
-          if (result && scanning) {
-            setScanning(false); // temporarily stop scanning
-            await handleScan(result.getText(), host);
-            setTimeout(() => setScanning(true), 2000); // resume after 2 seconds
+          if (result) {
+            handleScan(result.getText());
           }
-          if (err && err.name !== "NotFoundException") {
-            console.error(err);
-          }
+          if (err && err.name !== "NotFoundException") console.error(err);
         }
       );
     } catch (err) {
@@ -56,42 +51,18 @@ export default function ScanPage() {
     }
   };
 
-  // Handle scanned QR
-  const handleScan = async (scannedText, host) => {
-    if (!scannedText) return;
+  const handleScan = async (text) => {
+    if (!text) return;
 
-    let studentId;
-    try {
-      const data = JSON.parse(scannedText);
-      studentId = data.id?.trim();
-      if (!studentId) throw new Error("No ID found in QR");
-    } catch {
-      setMessage("Invalid QR code format");
-      return;
-    }
-
-    // Prevent duplicate inserts from multiple scans
-    if (recentScans.has(studentId)) {
-      setMessage(`Already scanned: ${studentId}`);
-      return;
-    }
-
-    setRecentScans((prev) => new Set(prev).add(studentId));
-    setTimeout(() => {
-      setRecentScans((prev) => {
-        const newSet = new Set(prev);
-        newSet.delete(studentId);
-        return newSet;
-      });
-    }, 5000); // allow re-scan after 5 seconds
+    const studentId = text.trim(); // Only student ID
 
     try {
-      // Check if student already marked in DB
+      // Prevent duplicate entries
       const { data: existing, error: checkError } = await supabase
         .from("attendance")
         .select("*")
         .eq("student_id", studentId)
-        .eq("host_id", host.id)
+        .eq("host_id", hostInfo.id)
         .single();
 
       if (checkError && checkError.code !== "PGRST116") throw checkError;
@@ -101,9 +72,9 @@ export default function ScanPage() {
         return;
       }
 
-      // Insert attendance
+      // Insert new attendance
       const { error } = await supabase.from("attendance").insert([
-        { student_id: studentId, host_id: host.id },
+        { student_id: studentId, host_id: hostInfo.id }
       ]);
 
       if (error) throw error;
@@ -127,9 +98,12 @@ export default function ScanPage() {
           ref={videoRef}
           style={{ width: "100%", maxWidth: "400px", borderRadius: "8px" }}
         />
-        <button style={buttonStyle} onClick={() => router.push("/host/dashboard")}>
-          Back to Dashboard
-        </button>
+
+        <div style={{ display: "flex", gap: "15px", marginTop: "20px" }}>
+          <button style={buttonStyle} onClick={() => router.push("/host/dashboard")}>
+            Back
+          </button>
+        </div>
       </main>
 
       <footer style={headerFooterStyle}>
@@ -145,7 +119,7 @@ export default function ScanPage() {
 const headerFooterStyle = {
   backgroundColor: "#FFD700",
   padding: "20px",
-  textAlign: "center",
+  textAlign: "center"
 };
 
 const mainStyle = {
@@ -155,7 +129,7 @@ const mainStyle = {
   justifyContent: "center",
   alignItems: "center",
   gap: "20px",
-  padding: "20px",
+  padding: "20px"
 };
 
 const buttonStyle = {
@@ -166,5 +140,5 @@ const buttonStyle = {
   backgroundColor: "#f4b400",
   color: "white",
   cursor: "pointer",
-  width: "180px",
+  minWidth: "120px"
 };
